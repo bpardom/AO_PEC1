@@ -1,7 +1,7 @@
 ---
 title: "PEC1 Informe"
 author: "Beatriz Pardo Montenegro"
-date: "26/4/2020"
+date: "03/05/2020"
 output:
   pdf_document: 
     toc: yes
@@ -53,6 +53,8 @@ library(limma)
 library(hgu133plus2.db)
 library(ggplot2)
 library(gghighlight)
+library(org.Hs.eg.db)
+library(ReactomePA)
 ```
 
 ```{r,include=FALSE}
@@ -138,15 +140,26 @@ examinarse a simple vista. A pesar de ello se puede obtener por ejemplo un MAplo
 knitr::include_graphics("C:/Bea/Master/Datos omicos Bea/PEC1/Results/imagenes/figure8.png")
 ```
 
+### 3.5.5 Filtrado de genes 
+Utilizo la función nsFilter del paquete genefilter para quitar los genes que no superan un umbral de expresión, y que por lo tanto no se espera que estén diferencialmente expresados.
 
-### 3.5.5 Identificación de genes diferencialmente expresados
+
+```{r, warning=FALSE, echo=FALSE}
+library(genefilter)
+annotation(affyceles) <- "hgu133plus2.db"
+fil <-nsFilter(affyceles, require.entrez =T, remove.dupEntrez =T, var.filter =T, var.func =IQR, var.cutoff =0.75, filterByQuantile =T, feature.exclude ="^AFFX")
+affycelesfil<-fil$eset
+```
+
+
+### 3.5.6 Identificación de genes diferencialmente expresados
 Realizo el análisis basado en modelos lineales. Para la aplicación de dicho modelo lineal, lo primero que hago es definir la matriz de diseño.
 
 ```{r, echo=FALSE}
-madis <- cbind(DMSO = c(1,1,1,0,0,0),
+madisf <- cbind(DMSO = c(1,1,1,0,0,0),
                 Paclitaxel = c(0,0,0,1,1,1))
-rownames(madis) <- rownames(affyceles@phenoData)
-madis
+rownames(madisf) <- rownames(affycelesfil@phenoData)
+madisf
 ```
 
 Con el modelo lineal definido a través de una matriz de diseño, pueden
@@ -155,14 +168,14 @@ entre los parámetros del modelo. Para ello creo la matriz de contrastes donde e
 
 
 ```{r,echo=FALSE}
-macont <- makeContrasts(Paclitaxel - DMSO, levels= madis)
+macont <- makeContrasts(Paclitaxel - DMSO, levels= madisf)
 macont
 ```
 
 Una vez creadas ambas matrices paso a estimar el modelo donde puedo comparar la expresión de los genes según las muestras hayan sido tratadas con DMSO o Paclitaxel. Podré observar si hay genes diferencialmente expresados. 
 
 ```{r, echo=FALSE}
-lineartar <- lmFit(affyceles, madis)
+lineartar <- lmFit(object = affycelesfil, design = madisf)
 ```
 
 ```{r, echo=FALSE}
@@ -178,7 +191,7 @@ a menos diferencialmente expresados.
 En los arrays de Affymetrix sabemos que cada valor no corresponde
 a la expresión de un gen sino de una sonda y hay varios valores (sondas) por cada gen.
 
-Fijando el lfc en 1 salen 257 valores sobreexpresados en los tratados con Paclitaxel respecto a los tratados con DMSO. 
+Fijando el lfc en 1 salen 172 valores sobreexpresados en los tratados con Paclitaxel respecto a los tratados con DMSO. 
 
 ```{r, echo=FALSE}
 resultados<-decideTests(tarmacont, method="separate", adjust.method="fdr", p.value=0.1, lfc=1)
@@ -192,7 +205,7 @@ print(summary(resultados))
 vennDiagram(resultados)
 ```
 
-Pruebo a bajar a 0,5 el valor del lfc, así observo 273 genes down regulados y 1323 genes up regulados.
+Pruebo a bajar a 0,5 el valor del lfc, así observo 186 genes down regulados y 894 genes up regulados.
 
 ```{r,echo=FALSE}
 resultados2<-decideTests(tarmacont, method="separate", adjust.method="fdr", p.value=0.1, lfc=0.5)
@@ -201,7 +214,7 @@ rescero<-resultados2[sumabs!=0,]
 print(summary(resultados2))
 ```
 
-### 3.5.6 Anotación de los resultados
+### 3.5.7 Anotación de los resultados
 La identificación de los genes seleccionados será más sencilla si le asigno el nombre y el símbolo del gen. A este proceso se le llama anotación, utilizo la tabla generada por la función toptable y me descargo la libreria específica del array utilizado en mi estudio (Affymetrix GeneChip® Human Genome U133 Plus 2.0 microarray). Haciendo esto se asocian los identificadores que aparecen en la tabla, con carácterísticas como el Símbolo del gen, el identificador del gen (EntrezID) o la descripción del gen.
 
 ```{r, echo=FALSE}
@@ -210,7 +223,7 @@ annotatedTopTable <- function(topTab, anotPackage)
   topTab <- cbind(PROBEID=rownames(topTab), topTab)
   myProbes <- rownames(topTab)
   thePackage <- eval(parse(text = anotPackage))
-  geneAnots <- select(thePackage, myProbes, c("SYMBOL", "ENTREZID", "GENENAME"))
+  geneAnots <- AnnotationDbi::select(thePackage, myProbes, c("SYMBOL", "ENTREZID", "GENENAME"))
   annotatedTopTab<- merge(x=geneAnots, y=topTab, by.x="PROBEID", by.y="PROBEID")
   return(annotatedTopTab)
 }
@@ -255,6 +268,60 @@ genes = genesdif [order(genesdif$adj.P.Val,decreasing = TRUE), ]
 head(genes,4)
 ```
 
+### 3.5.8 Análisis de significación biológica
+Con este gráfico podemos ver el resultado del análisis de enriquecimiento cuyo objetivo es establecer si un determinado proceso biológico o una vía
+metabólica aparece con mayor o menor frecuencia en la lista de genes seleccionados que en la población de genes.
+
+```{r, fig.cap="Figura11: Análisis de significación biológica", warning=FALSE, echo=FALSE}
+signitables <- list(DMSOvsPaclitaxel = toptarmacont)
+signiselect <- list()
+for (i in 1:length(signitables)){
+  topTab <- signitables[[i]]
+  whichGenes<-topTab["adj.P.Val"]<0.15
+  selectedIDs <- rownames(topTab)[whichGenes]
+  EntrezIDs<- AnnotationDbi::select(hgu133plus2.db, selectedIDs, c("ENTREZID"))
+  EntrezIDs <- EntrezIDs$ENTREZID
+  signiselect[[i]] <- EntrezIDs
+  names(signiselect)[i] <- names(signitables)[i]
+}
+sapply(signiselect, length)
+mapped_genes2GO <- mappedkeys(org.Hs.egGO)
+mapped_genes2KEGG <- mappedkeys(org.Hs.egPATH)
+mapped_genes <- union(mapped_genes2GO , mapped_genes2KEGG)
+listOfData <- signiselect[1]
+comparisonsNames <- names(listOfData)
+universe <- mapped_genes
+
+for (i in 1:length(listOfData)){
+  genesIn <- listOfData[[i]]
+  comparison <- comparisonsNames[i]
+  enrich.result <- enrichPathway(gene = genesIn, pvalueCutoff = 0.05, 
+                                 readable = T, 
+                                 pAdjustMethod = "BH",
+                                 organism = "human",
+                                 universe = universe)
+  
+  cat("##################################")
+  cat("\nComparison: ", comparison,"\n")
+  print(head(enrich.result))
+
+  if (length(rownames(enrich.result@result)) != 0) {
+  write.csv(as.data.frame(enrich.result), 
+             file=paste0("C:/Bea/Master/Datos omicos Bea/PEC1/Results","ReactomePA.Results.",comparison,".csv"), row.names = FALSE)
+  
+  pdf(file=paste0("C:/Bea/Master/Datos omicos Bea/PEC1/Result","ReactomePABarplot.",comparison,".pdf")) 
+  print(barplot(enrich.result, showCategory = 15, font.size = 4, title = paste0("Reactome Pathway Analysis for ", comparison, ". Barplot")))
+  dev.off()
+  
+  pdf(file = paste0("C:/Bea/Master/Datos omicos Bea/PEC1/Result","ReactomePAcnetplot.",comparison,".pdf"))
+    print(cnetplot(enrich.result, categorySize = "geneNum", schowCategory = 15, vertex.label.cex = 0.75))
+  dev.off()
+  }
+}
+cnetplot(enrich.result, categorySize = "geneNum", schowCategory = 15, vertex.label.cex = 0.75)
+
+```
+
 # 4.Resultados
 Se observan un número bastante elevado de genes que incrementan su expresión entre las células tratadas con Paclitaxel. Estos genes pueden estar implicados en los mecanísmos de resistencia a quimioterapia que desarrollan las células metastásicas de cáncer de mama. Su inhibición por lo tanto podría ser una nueva estrategia terapéutica. En el artículo publicado con los datos de mi experimento se concluye que la quimioterapia produce una actividad elevada de JNK que incrementa la actividad en la matriz extracelular (ECM), cicatrización de heridas y una red de células madre en las células cancerosas lo que conduce a una menor eficacia terapéutica. El tratamiento con fármacos quimioterapéuticos induce la actividad de JNK en las células de cáncer de mama, lo que refuerza la producción de SPP1 y TNC que promueven las metástasis pulmonares @32198421. Con lo que la inhibición tanto de JNK como de la expresión de SPP1 o TNC hace que los tumores mamarios sean más sensibles a la quimioterapia, pudiendo ser esta una futura estrategia en el tratamiento del cáncer de mama metastásico @GSE98238.
 
@@ -286,6 +353,8 @@ library(limma)
 library(hgu133plus2.db)
 library(ggplot2)
 library(gghighlight)
+library(org.Hs.eg.db)
+library(ReactomePA)
 ```
 
 
@@ -344,24 +413,32 @@ arrayQualityMetrics(affyceles,
 ```
 
 ```{r, warning=FALSE}
+library(genefilter)
+annotation(affyceles) <- "hgu133plus2.db"
+fil <-nsFilter(affyceles, require.entrez =T, remove.dupEntrez =T, var.filter =T, var.func =IQR, var.cutoff =0.75, filterByQuantile =T, feature.exclude ="^AFFX")
+affycelesfil<-fil$eset
+```
+
+```{r, warning=FALSE}
 #Creación de matriz de diseño
 
-madis <- cbind(DMSO = c(1,1,1,0,0,0),
+madisf <- cbind(DMSO = c(1,1,1,0,0,0),
                 Paclitaxel = c(0,0,0,1,1,1))
-rownames(madis) <- rownames(affyceles@phenoData)
+rownames(madisf) <- rownames(affycelesfil@phenoData)
+madisf
 ```
 
 
 ```{r, warning=FALSE}
 #Creación de matriz de contraste
 
-macont <- makeContrasts(Paclitaxel - DMSO, levels= madis)
+macont <- makeContrasts(Paclitaxel - DMSO, levels= madisf)
 ```
 
 ```{r, warning=FALSE}
 #Estimación del modelo lineal
 
-lineartar <- lmFit(affyceles, madis)
+lineartar <- lmFit(affycelesfil, madisf)
 ```
 
 ```{r, warning=FALSE}
@@ -439,6 +516,57 @@ genesdif<-subset(connombres, logFC > 2 & abs(-log10(P.Value)) > 1)
 detach(connombres)
 genes = genesdif [order(genesdif$adj.P.Val,decreasing = TRUE), ]
 head(genes,4)
+```
+
+
+```{r, warning=FALSE}
+signitables <- list(DMSOvsPaclitaxel = toptarmacont)
+signiselect <- list()
+for (i in 1:length(signitables)){
+  topTab <- signitables[[i]]
+  whichGenes<-topTab["adj.P.Val"]<0.15
+  selectedIDs <- rownames(topTab)[whichGenes]
+  EntrezIDs<- AnnotationDbi::select(hgu133plus2.db, selectedIDs, c("ENTREZID"))
+  EntrezIDs <- EntrezIDs$ENTREZID
+  signiselect[[i]] <- EntrezIDs
+  names(signiselect)[i] <- names(signitables)[i]
+}
+sapply(signiselect, length)
+mapped_genes2GO <- mappedkeys(org.Hs.egGO)
+mapped_genes2KEGG <- mappedkeys(org.Hs.egPATH)
+mapped_genes <- union(mapped_genes2GO , mapped_genes2KEGG)
+listOfData <- signiselect[1]
+comparisonsNames <- names(listOfData)
+universe <- mapped_genes
+
+for (i in 1:length(listOfData)){
+  genesIn <- listOfData[[i]]
+  comparison <- comparisonsNames[i]
+  enrich.result <- enrichPathway(gene = genesIn, pvalueCutoff = 0.05, 
+                                 readable = T, 
+                                 pAdjustMethod = "BH",
+                                 organism = "human",
+                                 universe = universe)
+  
+  cat("##################################")
+  cat("\nComparison: ", comparison,"\n")
+  print(head(enrich.result))
+
+  if (length(rownames(enrich.result@result)) != 0) {
+  write.csv(as.data.frame(enrich.result), 
+             file=paste0("C:/Bea/Master/Datos omicos Bea/PEC1/Results","ReactomePA.Results.",comparison,".csv"), row.names = FALSE)
+  
+  pdf(file=paste0("C:/Bea/Master/Datos omicos Bea/PEC1/Result","ReactomePABarplot.",comparison,".pdf")) 
+  print(barplot(enrich.result, showCategory = 15, font.size = 4, title = paste0("Reactome Pathway Analysis for ", comparison, ". Barplot")))
+  dev.off()
+  
+  pdf(file = paste0("C:/Bea/Master/Datos omicos Bea/PEC1/Result","ReactomePAcnetplot.",comparison,".pdf"))
+    print(cnetplot(enrich.result, categorySize = "geneNum", schowCategory = 15, vertex.label.cex = 0.75))
+  dev.off()
+  }
+}
+cnetplot(enrich.result, categorySize = "geneNum", schowCategory = 15, vertex.label.cex = 0.75)
+
 ```
 
 
